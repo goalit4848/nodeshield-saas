@@ -1,0 +1,13 @@
+{
+  "name": "nodeshield-saas",
+  "version": "1.0.0",
+  "description": "Multi-player AI Webhook Shield",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@supabase/supabase-js": "^2.39.0"
+  }
+}
