@@ -13,6 +13,11 @@ const activeBatches = new Map();
 
 // --- THE AI FIREWALL (GROQ) ---
 async function checkSpamWithGroq(messagesText) {
+    if (!GROQ_API_KEY) {
+        console.error("GROQ_API_KEY is missing in Railway variables!");
+        return 'PASS';
+    }
+
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -21,7 +26,7 @@ async function checkSpamWithGroq(messagesText) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: 'llama3-8b-8192', // Blazing fast, free model
+                model: 'llama3-8b-8192',
                 messages: [
                     { 
                         role: 'system', 
@@ -33,11 +38,19 @@ async function checkSpamWithGroq(messagesText) {
                 max_tokens: 10
             })
         });
+
         const data = await response.json();
-        return data.choices[0].message.content.trim().toUpperCase();
+        
+        // Safety check: Ensure Groq actually returned a message
+        if (data && data.choices && data.choices[0] && data.choices[0].message) {
+            return data.choices[0].message.content.trim().toUpperCase();
+        } else {
+            console.error('Groq API Error Response:', data);
+            return 'PASS'; 
+        }
     } catch (error) {
-        console.error('Groq Error:', error);
-        return 'PASS'; // If AI fails, let it pass so we don't accidentally drop real customers
+        console.error('Groq Network/Fetch Error:', error);
+        return 'PASS'; 
     }
 }
 
@@ -55,7 +68,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
             messages: [],
             timerId: null,
             destination_url: null,
-            delay_timer: 15000 // Failsafe default (15 seconds)
+            delay_timer: 15000 // Failsafe default
         });
 
         // 3. Dynamic Timer Check: Pull developer settings from Supabase
@@ -80,27 +93,30 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     clearTimeout(batch.timerId);
 
     batch.timerId = setTimeout(async () => {
-        // Time is up! Grab the bundle and clear the room
         const finalMessages = [...batch.messages];
         const destUrl = batch.destination_url;
         const waitTimeUsed = batch.delay_timer;
         activeBatches.delete(shield_id); 
 
-        if (!destUrl) return;
+        if (!destUrl) {
+            console.error(`No destination URL found for shield: ${shield_id}`);
+            return;
+        }
 
-        // 5. Trigger AI Firewall
-        // EXTRACT ONLY THE TEXT SO THE AI DOESN'T GET CONFUSED BY UNIDILE JSON
+        // 5. Trigger AI Firewall (Extracting Text Only)
         const justTheText = finalMessages.map(item => item.sender?.message || '').join(' | ');
+        console.log(`Analyzing text for spam: "${justTheText}"`);
+        
         const aiDecision = await checkSpamWithGroq(justTheText);
 
         if (aiDecision.includes('BLOCK')) {
             console.log(`[SHIELD ACTIVATED] Scam blocked for: ${shield_id}`);
-            return; // Engine stops here. Make.com is never triggered.
+            return; 
         }
 
         // 6. Forward Safe Messages to Make.com
         try {
-            await fetch(destUrl, {
+            const forwardResponse = await fetch(destUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -109,12 +125,12 @@ app.post('/api/shield/:shield_id', async (req, res) => {
                     batched_messages: finalMessages
                 })
             });
-            console.log(`[SENT] Clean batch delivered to ${destUrl}`);
+            console.log(`[SENT] Clean batch delivered to ${destUrl}. Status: ${forwardResponse.status}`);
         } catch (err) {
-            console.error('Delivery failed:', err);
+            console.error('Delivery to Make.com failed:', err);
         }
 
-    }, batch.delay_timer); // Uses the dynamic timer from Supabase!
+    }, batch.delay_timer); 
 });
 
 // Start Server
