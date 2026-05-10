@@ -89,8 +89,9 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         if (!destUrl) return;
 
         // 5. Trigger AI Firewall
-        const textToAnalyze = JSON.stringify(finalMessages);
-        const aiDecision = await checkSpamWithGroq(textToAnalyze);
+        // EXTRACT ONLY THE TEXT SO THE AI DOESN'T GET CONFUSED BY UNIDILE JSON
+        const justTheText = finalMessages.map(item => item.sender?.message || '').join(' | ');
+        const aiDecision = await checkSpamWithGroq(justTheText);
 
         if (aiDecision.includes('BLOCK')) {
             console.log(`[SHIELD ACTIVATED] Scam blocked for: ${shield_id}`);
