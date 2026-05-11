@@ -9,7 +9,7 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const activeBatches = new Map();
 
-async function checkSpamWithGroq(messagesText) {
+async function checkSpamWithGroq(rawText) {
     if (!GROQ_API_KEY) return 'PASS';
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -17,7 +17,7 @@ async function checkSpamWithGroq(messagesText) {
             headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 model: 'llama-3.1-8b-instant',
-                messages: [{ role: 'system', content: 'Reply "BLOCK" if spam/malicious, else "PASS".' }, { role: 'user', content: messagesText }],
+                messages: [{ role: 'system', content: 'Reply "BLOCK" if spam/malicious, else "PASS".' }, { role: 'user', content: rawText }],
                 temperature: 0, max_tokens: 10
             })
         });
@@ -41,7 +41,6 @@ app.post('/api/shield/:shield_id', async (req, res) => {
             delay_timer: 15000 
         });
 
-        // Background check to Supabase
         supabase.from('users').select('destination_url, delay_timer').eq('shield_id', shield_id).single()
             .then(({ data }) => {
                 if (data) {
@@ -66,33 +65,28 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         const currentBatch = activeBatches.get(shield_id);
         activeBatches.delete(shield_id);
 
-        // BULLETPROOF FIX 1: The URL Fallback
         const safeUrl = currentBatch?.destination_url || "https://hook.eu1.make.com/vl53oljhoahccjhsmgvqw1wm7os98nm2";
 
-        // BULLETPROOF FIX 2: Prevent null crashes from images/empty texts
-        const extractedChatId = finalMessages[0]?.account_info?.chat_id || "unknown_chat";
-        const rawText = finalMessages.map(item => item.sender?.message || "media_or_empty").join(' | ');
+        console.log(`[4] Analyzing payload with AI...`);
+        // We scan the raw text string to catch the messages safely
+        const rawStringForAI = JSON.stringify(finalMessages);
+        const aiDecision = await checkSpamWithGroq(rawStringForAI);
         
-        console.log(`[4] Extracted Text: "${rawText}"`);
-
-        const aiDecision = await checkSpamWithGroq(rawText);
         if (aiDecision.includes('BLOCK')) {
             console.log(`[SHIELD] Spam blocked by AI.`);
             return;
         }
 
-        console.log(`[5] Sending to Make.com at ${safeUrl}...`);
+        console.log(`[5] Sending ORIGINAL FULL payload back to Make.com...`);
         
         try {
             const response = await fetch(safeUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // BULLETPROOF FIX 3: Strict Strings
+                // THIS RETURNS IT TO THE EXACT SHAPE OF YOUR VERY FIRST SCREENSHOT
                 body: JSON.stringify({ 
-                    shield_id: String(shield_id),
-                    chat_id: String(extractedChatId),
-                    text_for_ai: String(rawText),
-                    total_messages_bundled: finalMessages.length
+                    shield_id: shield_id,
+                    messages: finalMessages
                 })
             });
             console.log(`[6] SUCCESS! Make.com caught it (Status: ${response.status})`);
