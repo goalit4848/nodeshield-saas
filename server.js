@@ -30,19 +30,16 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
-    // 1. Instant 200 OK
     res.status(200).send("Buffered");
 
-    // 2. Initialize batch IMMEDIATELY
     if (!activeBatches.has(shield_id)) {
         activeBatches.set(shield_id, {
             messages: [],
             timerId: null,
             destination_url: null,
-            delay_timer: 15000 // Hardcoded 15s backup
+            delay_timer: 15000 
         });
 
-        // Async check Supabase in the background without blocking the timer
         supabase.from('users').select('destination_url, delay_timer').eq('shield_id', shield_id).single()
             .then(({ data }) => {
                 if (data) {
@@ -58,7 +55,6 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const batch = activeBatches.get(shield_id);
     batch.messages.push(payload);
 
-    // 3. Reset and Start Timer
     clearTimeout(batch.timerId);
     batch.timerId = setTimeout(async () => {
         const finalMessages = [...batch.messages];
@@ -66,21 +62,30 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         const destUrl = currentBatch?.destination_url;
         activeBatches.delete(shield_id);
 
-        if (!destUrl) {
-            console.log("Error: No destination URL found in Supabase for " + shield_id);
-            return;
-        }
+        if (!destUrl) return;
 
         const justTheText = finalMessages.map(item => item.sender?.message || '').join(' | ');
         const aiDecision = await checkSpamWithGroq(justTheText);
 
-        if (aiDecision.includes('BLOCK')) return;
+        if (aiDecision.includes('BLOCK')) {
+            console.log(`[SHIELD] Blocked spam from ${shield_id}`);
+            return;
+        }
+
+        // --- THE MASTER FIX ---
+        // Strip out Unipile garbage. Find the chat_id from the first message.
+        const extractedChatId = finalMessages[0]?.account_info?.chat_id || '';
 
         try {
             const response = await fetch(destUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ shield_id, messages: finalMessages, text: justTheText })
+                body: JSON.stringify({ 
+                    shield_id: shield_id,
+                    chat_id: extractedChatId,
+                    text_for_ai: justTheText,
+                    total_messages_bundled: finalMessages.length
+                })
             });
             console.log(`[SENT] Delivered to Make. Status: ${response.status}`);
         } catch (err) { console.error('Forwarding failed', err); }
