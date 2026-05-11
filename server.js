@@ -34,10 +34,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
 
     if (!activeBatches.has(shield_id)) {
         activeBatches.set(shield_id, {
-            messages: [],
-            timerId: null,
-            destination_url: null,
-            delay_timer: 15000 
+            messages: [], timerId: null, destination_url: null, delay_timer: 15000 
         });
 
         supabase.from('users').select('destination_url, delay_timer').eq('shield_id', shield_id).single()
@@ -53,7 +50,13 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     }
 
     const batch = activeBatches.get(shield_id);
-    batch.messages.push(payload);
+    
+    // --- THE ARRAY FIX ---
+    if (Array.isArray(payload)) {
+        batch.messages.push(...payload);
+    } else {
+        batch.messages.push(payload);
+    }
 
     clearTimeout(batch.timerId);
     batch.timerId = setTimeout(async () => {
@@ -64,20 +67,15 @@ app.post('/api/shield/:shield_id', async (req, res) => {
 
         if (!destUrl) return;
 
-        const justTheText = finalMessages.map(item => item.sender?.message || '').join(' | ');
+        const justTheText = finalMessages.map(item => item.sender?.message || item.text || '').join(' | ');
         const aiDecision = await checkSpamWithGroq(justTheText);
 
-        if (aiDecision.includes('BLOCK')) {
-            console.log(`[SHIELD] Blocked spam from ${shield_id}`);
-            return;
-        }
+        if (aiDecision.includes('BLOCK')) return;
 
-        // --- THE MASTER FIX ---
-        // Strip out Unipile garbage. Find the chat_id from the first message.
-        const extractedChatId = finalMessages[0]?.account_info?.chat_id || '';
+        const extractedChatId = finalMessages[0]?.account_info?.chat_id || finalMessages[0]?.chat_id || '';
 
         try {
-            const response = await fetch(destUrl, {
+            await fetch(destUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
@@ -87,7 +85,6 @@ app.post('/api/shield/:shield_id', async (req, res) => {
                     total_messages_bundled: finalMessages.length
                 })
             });
-            console.log(`[SENT] Delivered to Make. Status: ${response.status}`);
         } catch (err) { console.error('Forwarding failed', err); }
 
     }, batch.delay_timer);
