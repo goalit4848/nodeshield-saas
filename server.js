@@ -1,5 +1,4 @@
 const express = require('express');
-const fetch = require('node-fetch');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
