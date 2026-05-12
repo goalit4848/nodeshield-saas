@@ -4,15 +4,20 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json());
 
-// Initialize Supabase
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+// Safely initialize Supabase (Checks multiple common env variable names to prevent crashes)
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+    console.warn("⚠️ WARNING: Missing Supabase URL or Key in Environment Variables!");
+}
+const supabase = createClient(supabaseUrl || "https://placeholder.supabase.co", supabaseKey || "placeholder_key");
 
 // In-memory storage for message bundles and timers
 const messageQueues = new Map();
 
 /**
  * [4] HARDENED AI ANALYZER
- * This function tells Groq to be a strict security guard.
  */
 async function callGroqAI(bundledText) {
     const groqEndpoint = "https://api.groq.com/openai/v1/chat/completions";
@@ -51,7 +56,7 @@ If it is safe, reply with ONLY the word: PASS`;
         });
 
         const data = await response.json();
-        return data.choices[0].message.content || "PASS";
+        return data.choices?.[0]?.message?.content || "PASS";
     } catch (error) {
         console.error("Groq AI Error:", error);
         return "PASS"; // Failsafe
@@ -63,29 +68,34 @@ If it is safe, reply with ONLY the word: PASS`;
  */
 app.post('/webhook', async (req, res) => {
     const payload = req.body;
-    const shield_id = payload.meta?.shield_id || "demo123"; // Fallback for testing
+    const shield_id = payload.meta?.shield_id || "demo123";
     const sender_id = payload.sender?.id || "unknown";
-    const messageText = payload.text || "";
-
+    
     console.log(`[1] Message arrived from Unipile for: ${shield_id}`);
 
-    // Create a unique key for this specific conversation
     const queueKey = `${shield_id}_${sender_id}`;
 
-    // 1. Get User Settings from Supabase
-    const { data: user, error } = await supabase
-        .from('users')
-        .select('delay_timer, destination_url')
-        .eq('shield_id', shield_id)
-        .single();
+    // 1. Get User Settings from Supabase safely
+    let delay = 15000;
+    let destination = null;
 
-    if (error || !user) {
-        console.error("User not found in Supabase:", shield_id);
-        return res.status(404).send("Shield ID not recognized");
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('delay_timer, destination_url')
+            .eq('shield_id', shield_id)
+            .single();
+
+        if (error || !user) {
+            console.error("User not found in Supabase:", shield_id);
+            return res.status(404).send("Shield ID not recognized");
+        }
+        delay = user.delay_timer || 15000;
+        destination = user.destination_url;
+    } catch (dbError) {
+        console.error("Supabase Database Error:", dbError.message);
+        return res.status(500).send("Database error");
     }
-
-    const delay = user.delay_timer || 15000;
-    const destination = user.destination_url;
 
     // 2. Manage the Bundle
     if (!messageQueues.has(queueKey)) {
@@ -101,11 +111,10 @@ app.post('/webhook', async (req, res) => {
 
     queue.timer = setTimeout(async () => {
         const finalBundle = [...queue.messages];
-        messageQueues.delete(queueKey); // Clear the queue for the next batch
+        messageQueues.delete(queueKey);
 
         console.log(`[3] Timer finished. Bundled ${finalBundle.length} messages.`);
 
-        // Combine text for AI analysis
         const bundledText = finalBundle.map(m => m.text).join(" | ");
 
         // [4] AI SECURITY CHECK
@@ -117,11 +126,16 @@ app.post('/webhook', async (req, res) => {
 
         if (decision.includes("BLOCK")) {
             console.log("🛑 SPAM DETECTED. Blocking delivery to Client Webhook.");
-            return; // STOP HERE
+            return; // STOPS HERE. Does not send to Make.com.
         }
 
         // [5] DELIVERY
         console.log(`[5] Sending ORIGINAL FULL payload back to Make.com...`);
+        if (!destination) {
+            console.error("No destination URL found for this shield_id.");
+            return;
+        }
+
         try {
             const deliveryResponse = await fetch(destination, {
                 method: 'POST',
