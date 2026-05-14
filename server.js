@@ -7,12 +7,44 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
+// --- [NEW] BUSINESS CONFIGURATION ---
+const COST_PER_RUN = 0.02; // Average cost of one Make.com + AI run
+const DAILY_LIMIT = 50;    // Max messages a single user can send per 24h
+
 const activeBatches = new Map();
+
+// --- [NEW] BOUNCER FUNCTION (Tracking & Blocking) ---
+async function processBouncer(senderId) {
+    if (!senderId) return { allowed: true }; // Fallback if sender is missing
+
+    // 1. Check existing stats in Supabase
+    const { data: stats } = await supabase
+        .from('usage_stats')
+        .select('*')
+        .eq('sender_id', senderId)
+        .single();
+
+    // 2. Security Check: Is the user blocked or over the limit?
+    if (stats?.is_blocked) return { allowed: false, reason: 'Manual Block' };
+    if (stats?.daily_count >= DAILY_LIMIT) return { allowed: false, reason: 'Daily Limit Hit' };
+
+    // 3. Tracking: Update count and total spend
+    const newCount = (stats?.daily_count || 0) + 1;
+    const newSpend = (stats?.total_spent || 0) + COST_PER_RUN;
+
+    await supabase.from('usage_stats').upsert({
+        sender_id: senderId,
+        daily_count: newCount,
+        total_spent: newSpend,
+        last_seen: new Date().toISOString()
+    });
+
+    return { allowed: true };
+}
 
 async function checkSpamWithGroq(rawText) {
     if (!GROQ_API_KEY) return 'PASS';
     
-    // UPDATED PROMPT: Now understands Roman Urdu and Gaming Slang
     const systemPrompt = `You are the NodeShield Security Gateway. Output ONLY the word 'BLOCK' or 'PASS'.
 CRITERIA TO BLOCK:
 1. True Gibberish: Purely random keyboard smashes like 'hsjsbshe', 'asdfghj'.
@@ -20,8 +52,7 @@ CRITERIA TO BLOCK:
 CRITERIA TO PASS:
 1. Normal chat in ANY language, specifically including Roman Urdu/Hindi/Punjabi (e.g., 'haan', 'kya scene', 'id bhej', 'khel rha').
 2. Slang, phonetic spelling, or gaming terms (e.g., 'login', 'pass', 'id', 'gg').
-3. Repetitive greetings ('Hi', 'Hello') or actual questions.
-(Note: Roman Urdu is NOT gibberish. Only block completely random, nonsensical keystrokes).`;
+3. Repetitive greetings ('Hi', 'Hello') or actual questions.`;
 
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -38,8 +69,7 @@ CRITERIA TO PASS:
             })
         });
         const data = await response.json();
-        const decision = data?.choices?.[0]?.message?.content?.trim().toUpperCase() || 'PASS';
-        return decision;
+        return data?.choices?.[0]?.message?.content?.trim().toUpperCase() || 'PASS';
     } catch (e) { 
         return 'PASS'; 
     }
@@ -49,6 +79,18 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
+    // --- [NEW] STEP 0: BOUNCER CHECK ---
+    // Extracting sender_id from common WhatsApp/Webhook formats (sender, from, or chat_id)
+    const senderId = payload.sender || payload.from || payload.chat_id || "unknown_user";
+    
+    const bouncer = await processBouncer(senderId);
+    
+    if (!bouncer.allowed) {
+        console.log(`[BOUNCER] Dropped message from ${senderId}. Reason: ${bouncer.reason}`);
+        return res.status(403).send(bouncer.reason); // Stop immediately, no cost incurred
+    }
+
+    // --- START OF OLD BUFFER CODE (Keep exactly the same) ---
     console.log(`\n[1] Message arrived from Unipile for: ${shield_id}`);
     res.status(200).send("Buffered");
 
@@ -87,7 +129,6 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         const safeUrl = currentBatch?.destination_url || "https://hook.eu1.make.com/vl53oljhoahccjhsmgvqw1wm7os98nm2";
 
         console.log(`[4] Analyzing payload with AI...`);
-        // We scan the raw text string to catch the messages safely
         const rawStringForAI = JSON.stringify(finalMessages);
         const aiDecision = await checkSpamWithGroq(rawStringForAI);
         
@@ -104,7 +145,6 @@ app.post('/api/shield/:shield_id', async (req, res) => {
             const response = await fetch(safeUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // THIS RETURNS IT TO THE EXACT SHAPE OF YOUR VERY FIRST SCREENSHOT
                 body: JSON.stringify({ 
                     shield_id: shield_id,
                     messages: finalMessages
