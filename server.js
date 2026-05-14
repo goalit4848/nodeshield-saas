@@ -7,11 +7,11 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// --- 1. NEW: BOUNCER SETTINGS ---
+// --- BOUNCER SETTINGS ---
 const DAILY_LIMIT = 50; 
 const activeBatches = new Map();
 
-// --- 2. NEW: BOUNCER FUNCTION ---
+// --- THE BOUNCER (Tracks usage & manual blocks) ---
 async function processBouncer(senderId) {
     if (!senderId || senderId === "unknown_user") return { allowed: true };
 
@@ -73,7 +73,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
-    // Extract sender ID for the Bouncer safely so it doesn't crash
+    // --- SENDER ID EXTRACTION FOR BOUNCER ---
     let senderId = payload.from || payload.sender_id || payload.chat_id || "unknown_user";
     if (payload.sender && typeof payload.sender === 'object') {
         senderId = payload.sender.id || payload.sender.display_name || senderId;
@@ -82,7 +82,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     }
     senderId = String(senderId);
 
-    // Run the new Bouncer
+    // --- RUN THE BOUNCER ---
     const bouncer = await processBouncer(senderId);
     if (!bouncer.allowed) {
         console.log(`[BOUNCER] Dropped ${senderId}: ${bouncer.reason}`);
@@ -92,7 +92,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     console.log(`\n[1] Message arrived from Unipile for: ${shield_id}`);
     res.status(200).send("Buffered");
 
-    // --- YOUR DYNAMIC TIMER FIX (Using await) ---
+    // --- DYNAMIC TIMER FIX (Using await to sync with Supabase perfectly) ---
     if (!activeBatches.has(shield_id)) {
         const { data } = await supabase
             .from('users')
