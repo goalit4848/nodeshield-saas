@@ -52,7 +52,8 @@ CRITERIA TO BLOCK:
 CRITERIA TO PASS:
 1. Normal chat in ANY language, specifically including Roman Urdu/Hindi/Punjabi (e.g., 'haan', 'kya scene', 'id bhej', 'khel rha').
 2. Slang, phonetic spelling, or gaming terms (e.g., 'login', 'pass', 'id', 'gg').
-3. Repetitive greetings ('Hi', 'Hello') or actual questions.`;
+3. Repetitive greetings ('Hi', 'Hello') or actual questions.
+(Note: Roman Urdu is NOT gibberish. Only block completely random, nonsensical keystrokes).`;
 
     try {
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -79,10 +80,8 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
-    // --- [NEW] STEP 0: BOUNCER CHECK ---
-    // Extracting sender_id from common WhatsApp/Webhook formats (sender, from, or chat_id)
+    // --- STEP 0: BOUNCER CHECK ---
     const senderId = payload.sender || payload.from || payload.chat_id || "unknown_user";
-    
     const bouncer = await processBouncer(senderId);
     
     if (!bouncer.allowed) {
@@ -90,35 +89,32 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         return res.status(403).send(bouncer.reason); // Stop immediately, no cost incurred
     }
 
-    // --- START OF OLD BUFFER CODE (Keep exactly the same) ---
+    // --- START OF BUFFER CODE ---
     console.log(`\n[1] Message arrived from Unipile for: ${shield_id}`);
     res.status(200).send("Buffered");
 
+    // --- FIXED DYNAMIC TIMER LOGIC ---
     if (!activeBatches.has(shield_id)) {
+        // We AWAIT the database here so we get your exact setting BEFORE starting the timer
+        const { data } = await supabase
+            .from('users')
+            .select('destination_url, delay_timer')
+            .eq('shield_id', shield_id)
+            .single();
+
         activeBatches.set(shield_id, {
             messages: [],
             timerId: null,
-            destination_url: null,
-            delay_timer: 15000 
+            destination_url: data?.destination_url || "https://hook.eu1.make.com/vl53oljhoahccjhsmgvqw1wm7os98nm2",
+            delay_timer: data?.delay_timer || 15000 // Now respects your DB value
         });
-
-        supabase.from('users').select('destination_url, delay_timer').eq('shield_id', shield_id).single()
-            .then(({ data }) => {
-                if (data) {
-                    const b = activeBatches.get(shield_id);
-                    if (b) {
-                        b.destination_url = data.destination_url;
-                        if (data.delay_timer) b.delay_timer = data.delay_timer;
-                    }
-                }
-            });
     }
 
     const batch = activeBatches.get(shield_id);
     batch.messages.push(payload);
 
     clearTimeout(batch.timerId);
-    console.log(`[2] Timer restarted. Waiting...`);
+    console.log(`[2] Timer set for ${batch.delay_timer}ms. Waiting...`);
 
     batch.timerId = setTimeout(async () => {
         console.log(`[3] Timer finished. Bundled ${batch.messages.length} messages.`);
