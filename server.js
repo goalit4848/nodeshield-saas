@@ -11,7 +11,7 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const DAILY_LIMIT = 50; 
 const activeBatches = new Map();
 
-// --- THE BOUNCER ---
+// --- THE BOUNCER (Tracks usage & manual blocks) ---
 async function processBouncer(senderId) {
     if (!senderId || senderId === "unknown_user") return { allowed: true };
 
@@ -73,6 +73,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
+    // --- SMART SENDER EXTRACTION ---
     let senderId = payload.from || payload.sender_id || payload.chat_id || "unknown_user";
     if (payload.sender && typeof payload.sender === 'object') {
         senderId = payload.sender.id || payload.sender.display_name || senderId;
@@ -81,6 +82,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     }
     senderId = String(senderId);
 
+    // --- RUN BOUNCER ---
     const bouncer = await processBouncer(senderId);
     if (!bouncer.allowed) {
         console.log(`[BOUNCER] Dropped ${senderId}: ${bouncer.reason}`);
@@ -90,7 +92,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     console.log(`\n[1] Message arrived from Unipile for: ${shield_id}`);
     res.status(200).send("Buffered");
 
-    // --- DYNAMIC TIMER PROOF ---
+    // --- DYNAMIC TIMER (Awaits database sync before continuing) ---
     if (!activeBatches.has(shield_id)) {
         const { data } = await supabase
             .from('users')
@@ -98,14 +100,15 @@ app.post('/api/shield/:shield_id', async (req, res) => {
             .eq('shield_id', shield_id)
             .single();
 
-        // Let's log exactly what the DB gave us so you have proof it's fetching!
-        console.log(`[DB Sync] Fetched Timer for ${shield_id}: ${data?.delay_timer || 15000}ms`);
+        // This log proves what number it actually pulled from your DB
+        const fetchedTimer = data?.delay_timer || 15000;
+        console.log(`[DB Sync] Fetched Timer for ${shield_id}: ${fetchedTimer}ms`);
 
         activeBatches.set(shield_id, {
             messages: [],
             timerId: null,
             destination_url: data?.destination_url || "https://hook.eu1.make.com/vl53oljhoahccjhsmgvqw1wm7os98nm2",
-            delay_timer: data?.delay_timer || 15000 
+            delay_timer: fetchedTimer
         });
     }
 
@@ -113,7 +116,6 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     batch.messages.push(payload);
 
     clearTimeout(batch.timerId);
-    // Showing the exact timer variable here
     console.log(`[2] Timer restarted for ${batch.delay_timer}ms. Waiting...`);
 
     batch.timerId = setTimeout(async () => {
@@ -126,7 +128,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
 
         console.log(`[4] Analyzing payload with AI...`);
         
-        // --- YOUR EXACT OLD LOGIC (Safe!) ---
+        // --- YOUR EXACT OLD LOGIC ---
         const rawStringForAI = JSON.stringify(finalMessages);
         const aiDecision = await checkSpamWithGroq(rawStringForAI);
         
