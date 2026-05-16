@@ -73,8 +73,8 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
-    // --- SMART SENDER EXTRACTION ---
-    let senderId = payload.from || payload.sender_id || payload.chat_id || "unknown_user";
+    // --- SMART SENDER EXTRACTION (Updated to catch Unipile exact locations) ---
+    let senderId = payload?.account_info?.chat_id || payload?.attachments?.[0]?.provider_chat_id || payload.from || payload.sender_id || payload.chat_id || "unknown_user";
     if (payload.sender && typeof payload.sender === 'object') {
         senderId = payload.sender.id || payload.sender.display_name || senderId;
     } else if (typeof payload.sender === 'string') {
@@ -89,22 +89,24 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         return res.status(403).send(bouncer.reason);
     }
 
-    console.log(`\n[1] Message arrived from Unipile for: ${shield_id}`);
+    console.log(`\n[1] Message arrived from Unipile for Shield: ${shield_id} | Sender: ${senderId}`);
     res.status(200).send("Buffered");
 
+    // NEW: Create a unique batch key separating bundles by PHONE NUMBER
+    const batchKey = `${shield_id}_${senderId}`;
+
     // --- DYNAMIC TIMER (Awaits database sync before continuing) ---
-    if (!activeBatches.has(shield_id)) {
+    if (!activeBatches.has(batchKey)) {
         const { data } = await supabase
             .from('users')
             .select('destination_url, delay_timer')
             .eq('shield_id', shield_id)
             .single();
 
-        // This log proves what number it actually pulled from your DB
         const fetchedTimer = data?.delay_timer || 15000;
-        console.log(`[DB Sync] Fetched Timer for ${shield_id}: ${fetchedTimer}ms`);
+        console.log(`[DB Sync] Fetched Timer for ${batchKey}: ${fetchedTimer}ms`);
 
-        activeBatches.set(shield_id, {
+        activeBatches.set(batchKey, {
             messages: [],
             timerId: null,
             destination_url: data?.destination_url || "https://hook.eu1.make.com/vl53oljhoahccjhsmgvqw1wm7os98nm2",
@@ -112,21 +114,21 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         });
     }
 
-    const batch = activeBatches.get(shield_id);
+    const batch = activeBatches.get(batchKey);
     batch.messages.push(payload);
 
     clearTimeout(batch.timerId);
-    console.log(`[2] Timer restarted for ${batch.delay_timer}ms. Waiting...`);
+    console.log(`[2] Timer restarted for ${batch.delay_timer}ms. Waiting on ${senderId}...`);
 
     batch.timerId = setTimeout(async () => {
-        console.log(`[3] Timer finished. Bundled ${batch.messages.length} messages.`);
+        console.log(`[3] Timer finished for ${senderId}. Bundled ${batch.messages.length} messages.`);
         const finalMessages = [...batch.messages];
-        const currentBatch = activeBatches.get(shield_id);
-        activeBatches.delete(shield_id);
+        const currentBatch = activeBatches.get(batchKey);
+        activeBatches.delete(batchKey);
 
         const safeUrl = currentBatch?.destination_url || "https://hook.eu1.make.com/vl53oljhoahccjhsmgvqw1wm7os98nm2";
 
-        console.log(`[4] Analyzing payload with AI...`);
+        console.log(`[4] Analyzing payload with AI for ${senderId}...`);
         
         // --- YOUR EXACT OLD LOGIC ---
         const rawStringForAI = JSON.stringify(finalMessages);
@@ -135,7 +137,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         console.log(`[Security Check] AI Decision: ${aiDecision}`);
 
         if (aiDecision.includes('BLOCK')) {
-            console.log(`[SHIELD] Spam blocked by AI. Delivery stopped.`);
+            console.log(`[SHIELD] Spam blocked by AI for ${senderId}. Delivery stopped.`);
             return;
         }
 
@@ -150,7 +152,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
                     messages: finalMessages
                 })
             });
-            console.log(`[6] SUCCESS! Make.com caught it (Status: ${response.status})`);
+            console.log(`[6] SUCCESS! Make.com caught it for ${senderId} (Status: ${response.status})`);
         } catch (err) { 
             console.error('[ERROR] Forwarding failed', err); 
         }
