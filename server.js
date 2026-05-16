@@ -73,12 +73,29 @@ app.post('/api/shield/:shield_id', async (req, res) => {
     const { shield_id } = req.params;
     const payload = req.body;
 
-    // --- SMART SENDER EXTRACTION (Updated to catch Unipile exact locations) ---
-    let senderId = payload?.account_info?.chat_id || payload?.attachments?.[0]?.provider_chat_id || payload.from || payload.sender_id || payload.chat_id || "unknown_user";
-    if (payload.sender && typeof payload.sender === 'object') {
-        senderId = payload.sender.id || payload.sender.display_name || senderId;
-    } else if (typeof payload.sender === 'string') {
-        senderId = payload.sender;
+    // --- UNIVERSAL SENDER EXTRACTION ---
+    let senderId = "unknown_user";
+
+    // 1. WhatsApp Official Cloud API
+    if (payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from) {
+        senderId = payload.entry[0].changes[0].value.messages[0].from;
+    }
+    // 2. Green API
+    else if (payload?.senderData?.sender || payload?.senderData?.chatId) {
+        senderId = payload.senderData.sender || payload.senderData.chatId;
+    }
+    // 3. Unipile
+    else if (payload?.account_info?.chat_id || payload?.attachments?.[0]?.provider_chat_id) {
+        senderId = payload.account_info.chat_id || payload.attachments[0].provider_chat_id;
+    }
+    // 4. Generic Fallbacks (Twilio, Evolution API, etc.)
+    else {
+        senderId = payload?.from || payload?.sender_id || payload?.chat_id || "unknown_user";
+        if (payload?.sender && typeof payload.sender === 'object') {
+            senderId = payload.sender.id || payload.sender.display_name || senderId;
+        } else if (typeof payload.sender === 'string') {
+            senderId = payload.sender;
+        }
     }
     senderId = String(senderId);
 
@@ -89,7 +106,7 @@ app.post('/api/shield/:shield_id', async (req, res) => {
         return res.status(403).send(bouncer.reason);
     }
 
-    console.log(`\n[1] Message arrived from Unipile for Shield: ${shield_id} | Sender: ${senderId}`);
+    console.log(`\n[1] Message arrived for Shield: ${shield_id} | Sender: ${senderId}`);
     res.status(200).send("Buffered");
 
     // NEW: Create a unique batch key separating bundles by PHONE NUMBER
